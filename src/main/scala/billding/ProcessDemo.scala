@@ -1,11 +1,15 @@
 package billding
 
-import zio.{DurationOps, NonEmptyChunk, Schedule, ZIO}
+import zio.{DurationOps, NonEmptyChunk, Schedule, ZIO, ZIOAppDefault}
 import zio.process.{Command, ProcessInput, ProcessOutput}
 import zio.stream.ZStream
 
 import java.io.File
 import java.nio.charset.Charset
+import java.time.ZoneId
+import java.time.format.{DateTimeFormatter, FormatStyle}
+import java.time.temporal.{ChronoUnit, TemporalUnit}
+import java.util.Locale
 
 object ProcessDemo extends zio.ZIOAppDefault {
   val command = Command("cat", "build.sbt")
@@ -64,3 +68,26 @@ object BrewDemo extends zio.ZIOAppDefault:
       .linesStream
       .tap(line => ZIO.debug(line))
       .runDrain
+
+object WriteToFile extends ZIOAppDefault:
+  val touch = Command("touch", "junk.txt")
+  val append = Command("echo", "appended content") >> new java.io.File("junk.txt")
+  def append(line: String) = Command("echo", line) >> new java.io.File("junk.txt")
+  import zio.durationInt
+
+  val formatter =
+    DateTimeFormatter.ofPattern("h:mm a"	)
+      .withLocale( Locale.US )
+      .withZone( ZoneId.systemDefault() );
+
+  val appendLogLine =
+    for
+      timestamp <- zio.Clock.instant
+      _ <- append(formatter.format(timestamp)).run
+    yield ()
+
+  def run =
+    for
+      _ <- touch.run
+      _ <- (ZIO.debug("Appending now.") *> appendLogLine).repeat(Schedule.spaced(2.seconds) && Schedule.recurs(10))
+    yield "Finished"
