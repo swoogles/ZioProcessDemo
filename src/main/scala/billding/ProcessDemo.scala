@@ -54,3 +54,13 @@ object SbtDemo extends zio.ZIOAppDefault {
       _     <- fiber.join
     } yield ()
 }
+
+object BrewDemo extends zio.ZIOAppDefault:
+  val install = Command("brew", "install nonexistentApp")
+
+  def run =
+    install
+//      .stderr
+      .linesStream
+      .tap(line => ZIO.debug(line))
+      .runDrain
