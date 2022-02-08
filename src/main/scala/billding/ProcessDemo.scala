@@ -6,10 +6,11 @@ import zio.stream.ZStream
 
 import java.io.File
 import java.nio.charset.Charset
-import java.time.ZoneId
+import java.time.{Duration, Instant, ZoneId}
 import java.time.format.{DateTimeFormatter, FormatStyle}
 import java.time.temporal.{ChronoUnit, TemporalUnit}
 import java.util.Locale
+import zio.durationInt
 
 object ProcessDemo extends zio.ZIOAppDefault {
   val command = Command("cat", "build.sbt")
@@ -70,24 +71,53 @@ object BrewDemo extends zio.ZIOAppDefault:
       .runDrain
 
 object WriteToFile extends ZIOAppDefault:
-  val touch = Command("touch", "junk.txt")
-  val append = Command("echo", "appended content") >> new java.io.File("junk.txt")
-  def append(line: String) = Command("echo", line) >> new java.io.File("junk.txt")
-  import zio.durationInt
+  private val touch = Command("touch", "junk.txt")
+  private def append(line: String) = Command("echo", line) >> new java.io.File("junk.txt")
 
-  val formatter =
+  private val formatter =
     DateTimeFormatter.ofPattern("h:mm a"	)
       .withLocale( Locale.US )
       .withZone( ZoneId.systemDefault() );
 
-  val appendLogLine =
+  private val appendLogLine =
     for
       timestamp <- zio.Clock.instant
       _ <- append(formatter.format(timestamp)).run
     yield ()
 
-  def run =
+  val createAndRepeatedlyAppendTo =
     for
       _ <- touch.run
       _ <- (ZIO.debug("Appending now.") *> appendLogLine).repeat(Schedule.spaced(2.seconds) && Schedule.recurs(10))
+    yield "Finished"
+
+  def run =
+    createAndRepeatedlyAppendTo
+
+object ObserveFile extends ZIOAppDefault:
+  val touch = Command("tail", "-f", "junk.txt")
+
+  def monitorFile(startTime: Instant) =
+    for
+      _ <- touch
+      .linesStream
+      .takeUntilZIO(line =>
+        (
+          for {
+            _ <- ZIO.debug(line)
+            _ <- ZIO.debug("Checking")
+            curTime <- zio.Clock.instant
+            _ <- ZIO.debug(curTime)
+          } yield Duration.between(startTime, curTime).compareTo(Duration.ofSeconds(10))  > 0
+          )
+      )
+      .tap(line => ZIO.debug(line))
+      .runDrain
+    yield ()
+
+  def run =
+    for
+      startTime <- zio.Clock.instant
+      _ <- ZIO.debug(startTime)
+      _ <-  monitorFile(startTime).raceEither(WriteToFile.createAndRepeatedlyAppendTo)
     yield "Finished"
