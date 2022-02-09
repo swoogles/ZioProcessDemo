@@ -1,6 +1,6 @@
 package billding
 
-import zio.{DurationOps, NonEmptyChunk, Schedule, ZIO, ZIOAppDefault}
+import zio.{DurationOps, NonEmptyChunk, Schedule, ZIO, ZIOAppDefault, durationInt, process}
 import zio.process.{Command, ProcessInput, ProcessOutput}
 import zio.stream.ZStream
 
@@ -10,7 +10,6 @@ import java.time.{Duration, Instant, ZoneId}
 import java.time.format.{DateTimeFormatter, FormatStyle}
 import java.time.temporal.{ChronoUnit, TemporalUnit}
 import java.util.Locale
-import zio.durationInt
 
 object ProcessDemo extends zio.ZIOAppDefault {
   val command = Command("cat", "build.sbt")
@@ -162,3 +161,18 @@ object HtopDemo extends ZIOAppDefault:
         .tap(line => ZIO.debug(line))
         .runDrain
     yield  ()
+
+object GourceDemo extends ZIOAppDefault:
+  val gource = Command("gource")
+  val ps = Command("ps", "aux").stream
+  val gourceProcess = Command("grep", "gource").stdin(ProcessInput.fromStream(ps))
+  def kill(pid: Int) = Command("kill", pid.toString)
+  def run =
+    for
+      startTime <- zio.Clock.instant
+      gourceProcess: process.Process <- gource.copy(workingDirectory = Some(new File("/Users/bfrasure/Repositories/zio-ecosystem"))).run
+      _ <- ZIO.sleep(15.seconds)
+      _ <- gourceProcess.killForcibly
+//      _ <- ZIO.debug(gp)
+//      _ <- gourceFork.interrupt
+    yield ()
