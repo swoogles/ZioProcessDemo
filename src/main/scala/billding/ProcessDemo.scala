@@ -94,6 +94,22 @@ object WriteToFile extends ZIOAppDefault:
   def run =
     createAndRepeatedlyAppendTo
 
+def repeatForATime(startTime: Instant, debug: Boolean = false) = (_: Any) =>
+  for {
+    curTime <- zio.Clock.instant
+    timeSpentRepeating = Duration.between(startTime, curTime)
+    timeLeft = Duration.ofSeconds(10).minus(timeSpentRepeating)
+    shouldStop = timeLeft.isNegative
+    _ <-
+      if (debug)
+        if (shouldStop)
+          ZIO.debug("Done polling.")
+        else
+          ZIO.debug("Will poll for " + timeLeft.toSeconds + " more seconds.")
+      else ZIO.unit
+  } yield  shouldStop
+
+
 object ObserveFile extends ZIOAppDefault:
   val touch = Command("tail", "-f", "junk.txt")
 
@@ -101,16 +117,7 @@ object ObserveFile extends ZIOAppDefault:
     for
       _ <- touch
       .linesStream
-      .takeUntilZIO(line =>
-        (
-          for {
-            _ <- ZIO.debug(line)
-            _ <- ZIO.debug("Checking")
-            curTime <- zio.Clock.instant
-            _ <- ZIO.debug(curTime)
-          } yield Duration.between(startTime, curTime).compareTo(Duration.ofSeconds(10))  > 0
-          )
-      )
+      .takeUntilZIO(repeatForATime(startTime))
       .tap(line => ZIO.debug(line))
       .runDrain
     yield ()
@@ -126,20 +133,32 @@ object HtopDemo extends ZIOAppDefault:
   val top = Command("top")
 
   //
-  case class TopLine()
+  case class TopLine(applicationName: String, cpuPercentage: Float, mem: String)
   object TopLine:
-    def apply(raw: String) =
-      raw.replace("\t", "\\t");
+    def apply(raw: String): TopLine =
+      val truncated = raw.take(70)
+      val applicationName = truncated.slice(7, 19).trim
+      val cpuValue = truncated.slice(23,27).toFloat
+      val mem = truncated.slice(58, 63).trim
+      TopLine(applicationName, cpuValue, mem)
 
   val rawInput =
-    "69815* top              0.0  00:00.29 2/1      0   22     4901K 0B    0B    29267 69806 running  *0[1]       0.00000 0.00000    0   2591      45    459864     229925     2858      247591     114        8       0       0.0   0      0      root                   N/A    N/A   N/A   N/A   N/A   N/A"
+    "73648* top              0.0"
+    "69815* top              0.0"
+    "352    WindowServer 22.8      26:15:27 28       5    2820   4944M-" // terminal
+    "73648* top              0.0  00:00.28 2/1      0   22     4773K" // intellij
+    "55970  BetterTouchT 0.7"
 
   def run =
-    top
-      .linesStream
-      .drop(1)
-      .filter(line => Range(0,9).exists(num => line.startsWith(num.toString)) && line.contains("*"))
-      .map(TopLine(_))
-      .take(5)
-      .tap(line => ZIO.debug(line))
-      .runDrain
+    for
+      startTime <- zio.Clock.instant
+      _ <- top
+        .linesStream
+        .drop(1)
+        .filter(line => Range(0, 9).exists(num => line.startsWith(num.toString)) && line.contains("*"))
+        .map(TopLine(_))
+        .filter(_.cpuPercentage > 3.0)
+        .takeUntilZIO(repeatForATime(startTime))
+        .tap(line => ZIO.debug(line))
+        .runDrain
+    yield  ()
