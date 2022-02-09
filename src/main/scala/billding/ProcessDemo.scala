@@ -121,3 +121,25 @@ object ObserveFile extends ZIOAppDefault:
       _ <- ZIO.debug(startTime)
       _ <-  monitorFile(startTime).raceEither(WriteToFile.createAndRepeatedlyAppendTo)
     yield "Finished"
+
+object HtopDemo extends ZIOAppDefault:
+  val top = Command("top")
+
+  //
+  case class TopLine()
+  object TopLine:
+    def apply(raw: String) =
+      raw.replace("\t", "\\t");
+
+  val rawInput =
+    "69815* top              0.0  00:00.29 2/1      0   22     4901K 0B    0B    29267 69806 running  *0[1]       0.00000 0.00000    0   2591      45    459864     229925     2858      247591     114        8       0       0.0   0      0      root                   N/A    N/A   N/A   N/A   N/A   N/A"
+
+  def run =
+    top
+      .linesStream
+      .drop(1)
+      .filter(line => Range(0,9).exists(num => line.startsWith(num.toString)) && line.contains("*"))
+      .map(TopLine(_))
+      .take(5)
+      .tap(line => ZIO.debug(line))
+      .runDrain
