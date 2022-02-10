@@ -1,15 +1,34 @@
 package billding
 
-import zio.{DurationOps, NonEmptyChunk, Schedule, ZIO, ZIOAppDefault, durationInt, process}
+import zio.{Chunk, DurationOps, NonEmptyChunk, Ref, Schedule, ZIO, ZIOAppDefault, ZQueue, durationInt, process}
 import zio.process.{Command, ProcessInput, ProcessOutput}
 import zio.stream.ZStream
 
 import java.io.File
-import java.nio.charset.Charset
+import java.nio.charset.{Charset, StandardCharsets}
 import java.time.{Duration, Instant, ZoneId}
 import java.time.format.{DateTimeFormatter, FormatStyle}
 import java.time.temporal.{ChronoUnit, TemporalUnit}
 import java.util.Locale
+
+object InteractiveProcess extends zio.ZIOAppDefault:
+//  val command = Command("cat").stdin(ProcessInput.fromStream(ZStream.fromChunk(NonEmptyChunk("Hello", "world!").map(_.toByte))))
+  def run =
+    for {
+      commandQueue <- ZQueue.unbounded[Chunk[Byte]]
+//      commandQueue <- ZQueue.unbounded[Byte]
+//      process      <- Command("python3", "-qi").stdin(ProcessInput.fromQueue(commandQueue)).run
+
+      process <- Command("cat").stdin(ProcessInput.fromQueue(commandQueue)).run
+      //      process <- Command("cat").stdin(ProcessInput.fromString("hi\n", StandardCharsets.UTF_8)).run
+//      _            <- process.stdout.linesStream.foreach { response =>
+//        ZIO.debug(s"Response from REPL: $response")
+//      }.forkDaemon
+      _ <- commandQueue.offer(Chunk.fromArray("1+1\n".getBytes(StandardCharsets.UTF_8)))
+      _ <- commandQueue.offer(Chunk.fromArray("x\n".getBytes(StandardCharsets.UTF_8)))
+      _ <- commandQueue.offer(Chunk.fromArray("y\n".getBytes(StandardCharsets.UTF_8)))
+      _ <- ZIO.sleep(2.second)
+    } yield ()
 
 object ProcessDemo extends zio.ZIOAppDefault {
   val command = Command("cat", "build.sbt")
@@ -37,7 +56,7 @@ object SbtDemo extends zio.ZIOAppDefault {
       Map.empty,
       Some(new File("/Users/bfrasure/Repositories/zio-ecosystem")),
 //      Option.empty[File],
-      ProcessInput.inherit,
+      ProcessInput.Inherit,
       ProcessOutput.Pipe,
       ProcessOutput.Pipe,
       redirectErrorStream = false
@@ -60,7 +79,7 @@ object SbtDemo extends zio.ZIOAppDefault {
 }
 
 object BrewDemo extends zio.ZIOAppDefault:
-  val install = Command("brew", "install nonexistentApp")
+  val install = Command("brew", "install", "nonexistentApp")
 
   def run =
     install
@@ -116,6 +135,7 @@ object ObserveFile extends ZIOAppDefault:
     for
       _ <- touch
       .linesStream
+//        .repeat(Schedule.elapsed.whileOutput(_ < 4.seconds))
       .takeUntilZIO(repeatForATime(startTime))
       .tap(line => ZIO.debug(line))
       .runDrain
@@ -156,10 +176,12 @@ object HtopDemo extends ZIOAppDefault:
         .drop(1)
         .filter(line => Range(0, 9).exists(num => line.startsWith(num.toString)) && line.contains("*"))
         .map(TopLine(_))
-        .filter(_.cpuPercentage > 3.0)
-        .takeUntilZIO(repeatForATime(startTime))
+        .filter(_.cpuPercentage > 10.0)
+        .take(1)
+//        .takeUntilZIO(repeatForATime(startTime))
         .tap(line => ZIO.debug(line))
-        .runDrain
+        .foreach(line => say(line.applicationName + "is using a lot of CPU").run)
+//        .runDrain
     yield  ()
 
 object GourceDemo extends ZIOAppDefault:
@@ -171,8 +193,77 @@ object GourceDemo extends ZIOAppDefault:
     for
       startTime <- zio.Clock.instant
       gourceProcess: process.Process <- gource.copy(workingDirectory = Some(new File("/Users/bfrasure/Repositories/zio-ecosystem"))).run
-      _ <- ZIO.sleep(15.seconds)
+      _ <- ZIO.sleep(35.seconds)
       _ <- gourceProcess.killForcibly
 //      _ <- ZIO.debug(gp)
 //      _ <- gourceFork.interrupt
+    yield ()
+
+def say(message: String) =
+  Command("say", message)
+
+
+object Shpotify extends ZIOAppDefault:
+  val playYouSuffer =
+    Command("spotify", "play", "uri", "spotify:track:5oD2Z1OOx1Tmcu2mc9sLY2")
+
+  val stop =
+    Command("spotify", "stop")
+
+  val audioNotification  =
+    (for
+      _ <- playYouSuffer.run
+      _ <- ZIO.sleep(2.seconds)
+    yield ()).ensuring(ZIO.debug("Ensuring" ) *> stop.run.orDie) // TODO Better guarantee when process is killed?
+
+  def run =
+    audioNotification
+
+object Ticker extends ZIOAppDefault:
+  val ticker = Command("ticker", "-w", "AREN,ZSAN")
+
+  def run =
+    for
+      startTime <- zio.Clock.instant
+      _ <-
+        ticker.linesStream
+          .takeUntilZIO(repeatForATime(startTime))
+          .tap(line => ZIO.debug(line))
+          .runDrain
+      _ <- ZIO.sleep(1.seconds)
+    yield ()
+
+
+case class BitcoinPrice(value: Double)
+
+object TrackBitcoin extends ZIOAppDefault:
+  def alert(price: Double, msg: String, toggle: Boolean) =
+    ZIO.unit
+//      *> ZIO.debug("Bitcoin price: " + price)
+      *> ZIO.debug(msg)
+      *> (if (toggle) Shpotify.audioNotification  else ZIO.unit)
+
+  def run =
+    val cutOff = 65
+    for
+      price <- Ref.make(BitcoinPrice(0.0))
+      _ <-
+        ZStream.repeatZIO(ZIO.sleep(3.second) *> ZIO.succeed(BitcoinPrice(Math.random * 100)))
+          .mapZIO(newPrice =>
+            for
+              oldPrice <- price.get
+              priceHasDipped = oldPrice.value >= cutOff && newPrice.value < cutOff
+              priceHasRisen = oldPrice.value <= cutOff && newPrice.value > cutOff
+              toggle =  priceHasDipped || priceHasRisen
+              _ <-
+                if (priceHasDipped)
+                  alert(newPrice.value, "Bitcoin has dipped and is not profitable to mine", toggle)
+                else if (priceHasRisen)
+                  alert(newPrice.value, "Bitcoin has risen and is now profitable to mine", toggle)
+                else
+                  alert(newPrice.value, "Bitcoin price is stable", toggle)
+              _ <- price.set(newPrice)
+            yield ()
+          )
+          .runDrain  raceFirst zio.Console.readLine
     yield ()
